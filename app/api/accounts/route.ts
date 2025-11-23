@@ -1,72 +1,66 @@
-import { createClient } from "@/lib/supabase/server"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { type NextRequest, NextResponse } from "next/server"
+import { db } from "@/lib/db"
+import { accounts, businesses, teamMembers } from "@/db/schema"
+import { eq, and, inArray } from "drizzle-orm"
+import { randomUUID } from "crypto"
 
 export async function GET() {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   // Get user's accessible businesses
-  const { data: businesses } = await supabase.from("businesses").select("id").eq("owner_id", user.id)
+  const userBusinesses = await db
+    .select({ id: businesses.id })
+    .from(businesses)
+    .where(eq(businesses.ownerId, session.user.id))
 
-  const { data: teamMemberships } = await supabase
-    .from("team_members")
-    .select("business_id")
-    .eq("user_id", user.id)
-    .eq("status", "active")
+  const userTeamMemberships = await db
+    .select({ businessId: teamMembers.businessId })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.userId, session.user.id), eq(teamMembers.status, "active")))
 
-  const businessIds = [...(businesses?.map((b) => b.id) || []), ...(teamMemberships?.map((tm) => tm.business_id) || [])]
+  const businessIds = [
+    ...userBusinesses.map((b) => b.id),
+    ...userTeamMemberships.map((tm) => tm.businessId),
+  ]
 
   if (businessIds.length === 0) {
     return NextResponse.json([])
   }
 
-  const { data: accounts, error } = await supabase
-    .from("accounts")
-    .select("*")
-    .in("business_id", businessIds)
-    .eq("is_active", true)
+  const accountsList = await db
+    .select()
+    .from(accounts)
+    .where(and(inArray(accounts.businessId, businessIds), eq(accounts.isActive, true)))
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  return NextResponse.json(accounts)
+  return NextResponse.json(accountsList)
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const body = await request.json()
+  const now = new Date()
 
-  const { data: account, error } = await supabase
-    .from("accounts")
-    .insert({
+  const [newAccount] = await db
+    .insert(accounts)
+    .values({
+      id: randomUUID(),
       ...body,
-      created_by: user.id,
+      createdBy: session.user.id,
+      createdAt: now,
+      updatedAt: now,
     })
-    .select()
-    .single()
+    .returning()
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  return NextResponse.json(account)
+  return NextResponse.json(newAccount)
 }

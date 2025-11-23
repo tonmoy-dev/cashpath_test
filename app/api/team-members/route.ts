@@ -1,54 +1,71 @@
-import { createClient } from "@/lib/supabase/server"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { type NextRequest, NextResponse } from "next/server"
+import { db } from "@/lib/db"
+import { teamMembers, businesses, users, profiles } from "@/db/schema"
+import { eq, and } from "drizzle-orm"
 import { nanoid } from "nanoid"
+import { randomUUID } from "crypto"
 
 export async function GET() {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   // Get user's business
-  const { data: business } = await supabase.from("businesses").select("id").eq("owner_id", user.id).single()
+  const [business] = await db
+    .select({ id: businesses.id })
+    .from(businesses)
+    .where(eq(businesses.ownerId, session.user.id))
+    .limit(1)
 
   if (!business) {
     return NextResponse.json({ error: "Business not found" }, { status: 404 })
   }
 
-  const { data: teamMembers, error } = await supabase
-    .from("team_members")
-    .select("*, profiles(first_name, last_name, email)")
-    .eq("business_id", business.id)
+  const members = await db
+    .select({
+      teamMember: teamMembers,
+      user: users,
+      profile: profiles,
+    })
+    .from(teamMembers)
+    .leftJoin(users, eq(teamMembers.userId, users.id))
+    .leftJoin(profiles, eq(users.id, profiles.userId))
+    .where(eq(teamMembers.businessId, business.id))
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+  // Format response to match expected structure
+  const formattedMembers = members.map((m) => ({
+    ...m.teamMember,
+    profiles: m.user
+      ? {
+          first_name: m.profile?.firstName,
+          last_name: m.profile?.lastName,
+          email: m.user.email,
+        }
+      : null,
+  }))
 
-  return NextResponse.json(teamMembers)
+  return NextResponse.json(formattedMembers)
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const body = await request.json()
 
   // Get user's business
-  const { data: business } = await supabase.from("businesses").select("id").eq("owner_id", user.id).single()
+  const [business] = await db
+    .select({ id: businesses.id })
+    .from(businesses)
+    .where(eq(businesses.ownerId, session.user.id))
+    .limit(1)
 
   if (!business) {
     return NextResponse.json({ error: "Business not found" }, { status: 404 })
@@ -58,23 +75,22 @@ export async function POST(request: NextRequest) {
   const invitationCode = nanoid(8).toUpperCase()
   const expiresAt = new Date()
   expiresAt.setDate(expiresAt.getDate() + 7) // 7 days from now
+  const now = new Date()
 
-  const { data: teamMember, error } = await supabase
-    .from("team_members")
-    .insert({
-      business_id: business.id,
+  const [newTeamMember] = await db
+    .insert(teamMembers)
+    .values({
+      id: randomUUID(),
+      businessId: business.id,
       email: body.email,
       role: body.role,
-      invitation_code: invitationCode,
-      invitation_expires_at: expiresAt.toISOString(),
-      invited_by: user.id,
+      invitationCode,
+      invitationExpiresAt: expiresAt,
+      invitedBy: session.user.id,
+      createdAt: now,
+      updatedAt: now,
     })
-    .select()
-    .single()
+    .returning()
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  return NextResponse.json(teamMember)
+  return NextResponse.json(newTeamMember)
 }

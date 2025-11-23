@@ -1,53 +1,67 @@
-import { createClient } from "@/lib/supabase/server"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { type NextRequest, NextResponse } from "next/server"
+import { db } from "@/lib/db"
+import { profiles } from "@/db/schema"
+import { eq } from "drizzle-orm"
+import { randomUUID } from "crypto"
 
 export async function GET() {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const { data: profile, error } = await supabase.from("profiles").select("*").eq("id", user.id).single()
+  const [profile] = await db
+    .select()
+    .from(profiles)
+    .where(eq(profiles.userId, session.user.id))
+    .limit(1)
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  if (!profile) {
+    return NextResponse.json({ error: "Profile not found" }, { status: 404 })
   }
 
   return NextResponse.json(profile)
 }
 
 export async function PUT(request: NextRequest) {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const body = await request.json()
 
-  const { data: profile, error } = await supabase
-    .from("profiles")
-    .update({
-      ...body,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", user.id)
+  const [existingProfile] = await db
     .select()
-    .single()
+    .from(profiles)
+    .where(eq(profiles.userId, session.user.id))
+    .limit(1)
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  let profile
+  if (existingProfile) {
+    const [updated] = await db
+      .update(profiles)
+      .set({ ...body, updatedAt: new Date() })
+      .where(eq(profiles.userId, session.user.id))
+      .returning()
+    profile = updated
+  } else {
+    const now = new Date()
+    const [created] = await db
+      .insert(profiles)
+      .values({
+        id: randomUUID(),
+        userId: session.user.id,
+        ...body,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+    profile = created
   }
 
   return NextResponse.json(profile)

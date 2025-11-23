@@ -2,9 +2,8 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
-import { createClient } from "@/lib/supabase/client"
+import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -19,18 +18,6 @@ export default function ResetPasswordPage() {
   const [error, setError] = useState("")
   const [success, setSuccess] = useState("")
   const router = useRouter()
-  const searchParams = useSearchParams()
-  const supabase = createClient()
-
-  useEffect(() => {
-    // Check if we have the required tokens from the email link
-    const accessToken = searchParams.get("access_token")
-    const refreshToken = searchParams.get("refresh_token")
-
-    if (!accessToken || !refreshToken) {
-      setError("Invalid reset link. Please request a new password reset.")
-    }
-  }, [searchParams])
 
   const handleUpdatePassword = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -53,11 +40,19 @@ export default function ResetPasswordPage() {
     try {
       console.log("[v0] Attempting password update")
 
-      const { error } = await supabase.auth.updateUser({
-        password: password,
+      const response = await fetch("/api/auth/set-password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ password }),
       })
 
-      if (error) throw error
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update password")
+      }
 
       console.log("[v0] Password updated successfully")
       setSuccess("Password updated successfully! Redirecting to login...")

@@ -4,7 +4,7 @@ import type React from "react"
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { createClient } from "@/lib/supabase/client"
+import { signIn } from "next-auth/react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -22,7 +22,6 @@ export function AuthForm() {
   const [success, setSuccess] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
-  const supabase = createClient()
 
   const fillDemoCredentials = (role: "owner" | "admin" | "user") => {
     const credentials = {
@@ -43,16 +42,21 @@ export function AuthForm() {
     try {
       console.log("[v0] Attempting login with:", { email, password: "***" })
 
-      const { error } = await supabase.auth.signInWithPassword({
+      const result = await signIn("credentials", {
         email,
         password,
+        redirect: false,
       })
 
-      if (error) throw error
+      if (result?.error) {
+        throw new Error(result.error)
+      }
 
-      console.log("[v0] Login successful, redirecting to dashboard")
-      setSuccess("Login successful! Redirecting...")
-      setTimeout(() => router.push("/dashboard"), 1000)
+      if (result?.ok) {
+        console.log("[v0] Login successful, redirecting to dashboard")
+        setSuccess("Login successful! Redirecting...")
+        setTimeout(() => router.push("/dashboard"), 1000)
+      }
     } catch (err: any) {
       console.log("[v0] Login error:", err)
       setError("Invalid credentials. Please check your email and password.")
@@ -82,22 +86,33 @@ export function AuthForm() {
     try {
       console.log("[v0] Attempting signup with:", { email, name })
 
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL || `${window.location.origin}/dashboard`,
-          data: {
-            name,
-            role: "owner",
-          },
+      const response = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          email,
+          password,
+          name,
+        }),
       })
 
-      if (error) throw error
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Signup failed")
+      }
 
       console.log("[v0] Signup successful:", data)
-      setSuccess("Account created successfully! Please check your email to confirm your account.")
+      setSuccess("Account created successfully! Redirecting to login...")
+      setTimeout(() => {
+        setIsSignUp(false)
+        setEmail("")
+        setPassword("")
+        setConfirmPassword("")
+        setName("")
+      }, 2000)
     } catch (err: any) {
       console.log("[v0] Signup error:", err)
       setError(err.message || "Signup failed. Please try again.")

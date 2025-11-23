@@ -1,5 +1,6 @@
-import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 
 export default async function AuthCallbackPage({
   searchParams,
@@ -7,22 +8,14 @@ export default async function AuthCallbackPage({
   searchParams: Promise<{ code?: string; role?: string }>
 }) {
   const params = await searchParams
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  if (params.code) {
-    const { error } = await supabase.auth.exchangeCodeForSession(params.code)
-
-    if (!error) {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-
-      if (user && params.role === "owner") {
-        // Create business for new owner
-        redirect("/onboarding")
-      } else {
-        redirect("/dashboard")
-      }
+  if (session?.user) {
+    if (params.role === "owner") {
+      // Create business for new owner
+      redirect("/onboarding")
+    } else {
+      redirect("/dashboard")
     }
   }
 

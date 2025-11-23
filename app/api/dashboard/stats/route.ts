@@ -1,28 +1,32 @@
-import { createClient } from "@/lib/supabase/server"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { NextResponse } from "next/server"
+import { db } from "@/lib/db"
+import { transactions, businesses, teamMembers, accounts } from "@/db/schema"
+import { eq, and, inArray, desc } from "drizzle-orm"
 
 export async function GET() {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   // Get user's accessible businesses
-  const { data: businesses } = await supabase.from("businesses").select("id").eq("owner_id", user.id)
+  const userBusinesses = await db
+    .select({ id: businesses.id })
+    .from(businesses)
+    .where(eq(businesses.ownerId, session.user.id))
 
-  const { data: teamMemberships } = await supabase
-    .from("team_members")
-    .select("business_id")
-    .eq("user_id", user.id)
-    .eq("status", "active")
+  const userTeamMemberships = await db
+    .select({ businessId: teamMembers.businessId })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.userId, session.user.id), eq(teamMembers.status, "active")))
 
-  const businessIds = [...(businesses?.map((b) => b.id) || []), ...(teamMemberships?.map((tm) => tm.business_id) || [])]
+  const businessIds = [
+    ...userBusinesses.map((b) => b.id),
+    ...userTeamMemberships.map((tm) => tm.businessId),
+  ]
 
   if (businessIds.length === 0) {
     return NextResponse.json({
@@ -34,49 +38,56 @@ export async function GET() {
     })
   }
 
-  // Get revenue accounts total
-  const { data: revenueAccounts } = await supabase
-    .from("accounts")
-    .select("balance")
-    .in("business_id", businessIds)
-    .eq("type", "revenue")
+  // Get transactions for revenue/expense calculation
+  const allTransactions = await db
+    .select()
+    .from(transactions)
+    .where(inArray(transactions.businessId, businessIds))
 
-  // Get expense accounts total
-  const { data: expenseAccounts } = await supabase
-    .from("accounts")
-    .select("balance")
-    .in("business_id", businessIds)
-    .eq("type", "expense")
+  const totalRevenue = allTransactions
+    .filter((t) => t.type === "income")
+    .reduce((sum, t) => sum + Number(t.amount), 0)
+
+  const totalExpenses = allTransactions
+    .filter((t) => t.type === "expense")
+    .reduce((sum, t) => sum + Number(t.amount), 0)
 
   // Get total accounts count
-  const { count: totalAccounts } = await supabase
-    .from("accounts")
-    .select("*", { count: "exact", head: true })
-    .in("business_id", businessIds)
-    .eq("is_active", true)
+  const accountsList = await db
+    .select()
+    .from(accounts)
+    .where(and(inArray(accounts.businessId, businessIds), eq(accounts.isActive, true)))
+
+  const totalAccounts = accountsList.length
 
   // Get total transactions count
-  const { count: totalTransactions } = await supabase
-    .from("transactions")
-    .select("*", { count: "exact", head: true })
-    .in("business_id", businessIds)
+  const totalTransactions = allTransactions.length
 
   // Get recent transactions
-  const { data: recentTransactions } = await supabase
-    .from("transactions")
-    .select("*, accounts(name, type)")
-    .in("business_id", businessIds)
-    .order("created_at", { ascending: false })
+  const recentTransactionsData = await db
+    .select({
+      transaction: transactions,
+      account: {
+        name: accounts.name,
+        type: accounts.type,
+      },
+    })
+    .from(transactions)
+    .leftJoin(accounts, eq(transactions.accountId, accounts.id))
+    .where(inArray(transactions.businessId, businessIds))
+    .orderBy(desc(transactions.createdAt))
     .limit(5)
 
-  const totalRevenue = revenueAccounts?.reduce((sum, account) => sum + Number(account.balance), 0) || 0
-  const totalExpenses = expenseAccounts?.reduce((sum, account) => sum + Number(account.balance), 0) || 0
+  const recentTransactions = recentTransactionsData.map((r) => ({
+    ...r.transaction,
+    account: r.account,
+  }))
 
   return NextResponse.json({
     totalRevenue,
     totalExpenses,
-    totalAccounts: totalAccounts || 0,
-    totalTransactions: totalTransactions || 0,
-    recentTransactions: recentTransactions || [],
+    totalAccounts,
+    totalTransactions,
+    recentTransactions,
   })
 }

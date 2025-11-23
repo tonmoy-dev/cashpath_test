@@ -3,7 +3,7 @@
 import type React from "react"
 import { useState, useEffect } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { createClient } from "@/lib/supabase/client"
+import { signIn } from "next-auth/react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -26,7 +26,6 @@ export function EnhancedRoleLogin() {
   const [invitationRole, setInvitationRole] = useState<"partner" | "staff">("staff")
   const router = useRouter()
   const searchParams = useSearchParams()
-  const supabase = createClient()
 
   useEffect(() => {
     const invitation = searchParams.get("invitation")
@@ -39,16 +38,13 @@ export function EnhancedRoleLogin() {
 
   const checkInvitationRole = async (code: string) => {
     try {
-      const { data: teamMember } = await supabase
-        .from("team_members")
-        .select("role")
-        .eq("invitation_code", code)
-        .eq("status", "pending")
-        .single()
-
-      if (teamMember) {
-        setInvitationRole(teamMember.role)
-        setActiveTab(teamMember.role)
+      const response = await fetch(`/api/team-members?invitation_code=${code}`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data && data.role) {
+          setInvitationRole(data.role)
+          setActiveTab(data.role)
+        }
       }
     } catch (error) {
       console.log("[v0] Error checking invitation role:", error)
@@ -67,16 +63,21 @@ export function EnhancedRoleLogin() {
     try {
       console.log("[v0] Attempting owner login with:", email)
 
-      const { error } = await supabase.auth.signInWithPassword({
+      const result = await signIn("credentials", {
         email,
         password,
+        redirect: false,
       })
 
-      if (error) throw error
+      if (result?.error) {
+        throw new Error(result.error)
+      }
 
-      console.log("[v0] Owner login successful, redirecting to dashboard")
-      setSuccess("Login successful! Redirecting...")
-      setTimeout(() => router.push("/dashboard"), 1000)
+      if (result?.ok) {
+        console.log("[v0] Owner login successful, redirecting to dashboard")
+        setSuccess("Login successful! Redirecting...")
+        setTimeout(() => router.push("/dashboard"), 1000)
+      }
     } catch (err: any) {
       console.log("[v0] Owner login error:", err)
       setError("Invalid credentials. Please check your email and password.")
@@ -99,53 +100,40 @@ export function EnhancedRoleLogin() {
     try {
       console.log("[v0] Attempting owner signup with:", email)
 
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL || `${window.location.origin}/dashboard`,
-          data: {
-            name,
-            role: "owner",
-            business_name: businessName,
-          },
+      const response = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          email,
+          password,
+          name,
+          businessName,
+        }),
       })
 
-      if (error) throw error
+      const data = await response.json()
 
-      console.log("[v0] Owner signup successful:", data)
-
-      if (data.user) {
-        const { error: profileError } = await supabase.from("profiles").insert({
-          id: data.user.id,
-          email: email,
-          first_name: name.split(" ")[0] || name,
-          last_name: name.split(" ").slice(1).join(" ") || "",
-          role: "owner",
-        })
-
-        if (profileError) {
-          console.log("[v0] Profile creation error:", profileError)
-        } else {
-          const { data: businessData, error: businessError } = await supabase
-            .from("businesses")
-            .insert({
-              name: businessName,
-              owner_id: data.user.id,
-              email: email,
-            })
-            .select()
-            .single()
-
-          if (businessError) {
-            console.log("[v0] Business creation error:", businessError)
-          }
-        }
+      if (!response.ok) {
+        throw new Error(data.error || "Signup failed")
       }
 
+      console.log("[v0] Owner signup successful:", data)
       setSuccess("Account created successfully! Redirecting to dashboard...")
-      setTimeout(() => router.push("/dashboard"), 1000)
+      
+      // Auto-login after signup
+      const loginResult = await signIn("credentials", {
+        email,
+        password,
+        redirect: false,
+      })
+
+      if (loginResult?.ok) {
+        setTimeout(() => router.push("/dashboard"), 1000)
+      } else {
+        setTimeout(() => router.push("/auth/login"), 1000)
+      }
     } catch (err: any) {
       console.log("[v0] Owner signup error:", err)
       setError(err.message || "Signup failed. Please try again.")
@@ -166,16 +154,21 @@ export function EnhancedRoleLogin() {
     try {
       console.log("[v0] Attempting member login with:", email)
 
-      const { error } = await supabase.auth.signInWithPassword({
+      const result = await signIn("credentials", {
         email,
         password,
+        redirect: false,
       })
 
-      if (error) throw error
+      if (result?.error) {
+        throw new Error(result.error)
+      }
 
-      console.log("[v0] Member login successful, redirecting to dashboard")
-      setSuccess("Login successful! Redirecting...")
-      setTimeout(() => router.push("/dashboard"), 1000)
+      if (result?.ok) {
+        console.log("[v0] Member login successful, redirecting to dashboard")
+        setSuccess("Login successful! Redirecting...")
+        setTimeout(() => router.push("/dashboard"), 1000)
+      }
     } catch (err: any) {
       console.log("[v0] Member login error:", err)
       setError("Invalid credentials. Please check your email and password.")

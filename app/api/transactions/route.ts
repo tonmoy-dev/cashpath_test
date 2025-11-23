@@ -1,94 +1,115 @@
-import { createClient } from "@/lib/supabase/server"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { type NextRequest, NextResponse } from "next/server"
+import { db } from "@/lib/db"
+import { transactions, businesses, teamMembers, accounts } from "@/db/schema"
+import { eq, and, inArray, desc } from "drizzle-orm"
+import { randomUUID } from "crypto"
 
 export async function GET(request: NextRequest) {
-  const supabase = await createClient()
-  const { searchParams } = new URL(request.url)
-  const accountId = searchParams.get("account_id")
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const { searchParams } = new URL(request.url)
+  const accountId = searchParams.get("account_id")
+
   // Get user's accessible businesses
-  const { data: businesses } = await supabase.from("businesses").select("id").eq("owner_id", user.id)
+  const userBusinesses = await db
+    .select({ id: businesses.id })
+    .from(businesses)
+    .where(eq(businesses.ownerId, session.user.id))
 
-  const { data: teamMemberships } = await supabase
-    .from("team_members")
-    .select("business_id")
-    .eq("user_id", user.id)
-    .eq("status", "active")
+  const userTeamMemberships = await db
+    .select({ businessId: teamMembers.businessId })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.userId, session.user.id), eq(teamMembers.status, "active")))
 
-  const businessIds = [...(businesses?.map((b) => b.id) || []), ...(teamMemberships?.map((tm) => tm.business_id) || [])]
+  const businessIds = [
+    ...userBusinesses.map((b) => b.id),
+    ...userTeamMemberships.map((tm) => tm.businessId),
+  ]
 
   if (businessIds.length === 0) {
     return NextResponse.json([])
   }
 
-  let query = supabase
-    .from("transactions")
-    .select("*, accounts(name, type)")
-    .in("business_id", businessIds)
-    .order("transaction_date", { ascending: false })
+  let query = db
+    .select({
+      transaction: transactions,
+      account: {
+        name: accounts.name,
+        type: accounts.type,
+      },
+    })
+    .from(transactions)
+    .leftJoin(accounts, eq(transactions.accountId, accounts.id))
+    .where(inArray(transactions.businessId, businessIds))
+    .orderBy(desc(transactions.date))
 
   if (accountId) {
-    query = query.eq("account_id", accountId)
+    query = query.where(and(inArray(transactions.businessId, businessIds), eq(transactions.accountId, accountId))) as any
   }
 
-  const { data: transactions, error } = await query
+  const results = await query
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+  // Format response
+  const formattedTransactions = results.map((r) => ({
+    ...r.transaction,
+    account: r.account,
+  }))
 
-  return NextResponse.json(transactions)
+  return NextResponse.json(formattedTransactions)
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const body = await request.json()
+  const now = new Date()
 
-  // Start a transaction to update both transaction and account balance
-  const { data: transaction, error: transactionError } = await supabase
-    .from("transactions")
-    .insert({
-      ...body,
-      created_by: user.id,
-    })
-    .select()
-    .single()
+  // Use Drizzle transaction to ensure atomicity
+  const result = await db.transaction(async (tx) => {
+    // Create transaction
+    const [newTransaction] = await tx
+      .insert(transactions)
+      .values({
+        id: randomUUID(),
+        ...body,
+        createdBy: session.user.id,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
 
-  if (transactionError) {
-    return NextResponse.json({ error: transactionError.message }, { status: 500 })
-  }
+    // Calculate and update account balance
+    const accountTransactions = await tx
+      .select()
+      .from(transactions)
+      .where(eq(transactions.accountId, body.account_id))
 
-  // Update account balance
-  const balanceChange = body.type === "debit" ? body.amount : -body.amount
-  const { error: balanceError } = await supabase.rpc("update_account_balance", {
-    account_id: body.account_id,
-    amount_change: balanceChange,
+    const balance = accountTransactions.reduce((sum, t) => {
+      if (t.type === "income") {
+        return Number(sum) + Number(t.amount)
+      } else if (t.type === "expense") {
+        return Number(sum) - Number(t.amount)
+      }
+      return Number(sum)
+    }, 0)
+
+    await tx
+      .update(accounts)
+      .set({ balance: balance.toString() })
+      .where(eq(accounts.id, body.account_id))
+
+    return newTransaction
   })
 
-  if (balanceError) {
-    // Rollback transaction if balance update fails
-    await supabase.from("transactions").delete().eq("id", transaction.id)
-    return NextResponse.json({ error: "Failed to update account balance" }, { status: 500 })
-  }
-
-  return NextResponse.json(transaction)
+  return NextResponse.json(result)
 }

@@ -3,8 +3,7 @@
 import type React from "react"
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { createClient } from "@/lib/supabase/client"
-import { useAppState } from "@/lib/store"
+import { useSession } from "next-auth/react"
 
 interface AuthGuardProps {
   children: React.ReactNode
@@ -13,54 +12,36 @@ interface AuthGuardProps {
 }
 
 export function AuthGuard({ children, requiredRole, allowedRoles }: AuthGuardProps) {
-  const { state } = useAppState()
+  const { data: session, status } = useSession()
   const [isLoading, setIsLoading] = useState(true)
   const router = useRouter()
-  const supabase = createClient()
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const {
-          data: { user },
-          error,
-        } = await supabase.auth.getUser()
-
-        if (error || !user) {
-          router.push("/auth/login")
-          return
-        }
-
-        // If we have a user but no session in state, wait for it to load
-        if (!state.authSession.isAuthenticated) {
-          // Give some time for the auth state to update
-          setTimeout(() => setIsLoading(false), 1000)
-          return
-        }
-
-        const userRole = state.authSession.user?.role
-
-        if (requiredRole && userRole !== requiredRole) {
-          router.push("/unauthorized")
-          return
-        }
-
-        if (allowedRoles && !allowedRoles.includes(userRole as any)) {
-          router.push("/unauthorized")
-          return
-        }
-
-        setIsLoading(false)
-      } catch (error) {
-        console.error("Auth check error:", error)
-        router.push("/auth/login")
-      }
+    if (status === "loading") {
+      return
     }
 
-    checkAuth()
-  }, [state.authSession, requiredRole, allowedRoles, router, supabase.auth])
+    if (status === "unauthenticated" || !session?.user) {
+      router.push("/auth/login")
+      return
+    }
 
-  if (isLoading) {
+    const userRole = session.user.role as "owner" | "partner" | "staff"
+
+    if (requiredRole && userRole !== requiredRole) {
+      router.push("/unauthorized")
+      return
+    }
+
+    if (allowedRoles && !allowedRoles.includes(userRole)) {
+      router.push("/unauthorized")
+      return
+    }
+
+    setIsLoading(false)
+  }, [session, status, requiredRole, allowedRoles, router])
+
+  if (status === "loading" || isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
@@ -71,7 +52,7 @@ export function AuthGuard({ children, requiredRole, allowedRoles }: AuthGuardPro
     )
   }
 
-  if (!state.authSession.isAuthenticated) {
+  if (!session?.user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
@@ -82,7 +63,7 @@ export function AuthGuard({ children, requiredRole, allowedRoles }: AuthGuardPro
     )
   }
 
-  const userRole = state.authSession.user?.role
+  const userRole = session.user.role as "owner" | "partner" | "staff"
 
   if (requiredRole && userRole !== requiredRole) {
     return (
@@ -95,7 +76,7 @@ export function AuthGuard({ children, requiredRole, allowedRoles }: AuthGuardPro
     )
   }
 
-  if (allowedRoles && !allowedRoles.includes(userRole as any)) {
+  if (allowedRoles && !allowedRoles.includes(userRole)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">

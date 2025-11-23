@@ -1,10 +1,14 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { auth } from "@/auth"
-import { createClient } from "@/lib/supabase/server"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
+import bcrypt from "bcryptjs"
+import { db } from "@/lib/db"
+import { users } from "@/db/schema"
+import { eq } from "drizzle-orm"
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await auth()
+    const session = await getServerSession(authOptions)
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -16,16 +20,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 })
     }
 
-    const supabase = await createClient()
+    // Hash password
+    const saltRounds = 12
+    const hashedPassword = await bcrypt.hash(password, saltRounds)
 
-    const { error } = await supabase.auth.updateUser({
-      password: password,
-    })
-
-    if (error) {
-      console.error("Error updating password:", error)
-      return NextResponse.json({ error: "Failed to update password" }, { status: 500 })
-    }
+    // Update user password
+    await db
+      .update(users)
+      .set({
+        passwordHash: hashedPassword,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, session.user.id))
 
     return NextResponse.json({ success: true })
   } catch (error) {

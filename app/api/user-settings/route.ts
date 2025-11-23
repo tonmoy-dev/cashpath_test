@@ -1,46 +1,44 @@
-import { createClient } from "@/lib/supabase/server"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { type NextRequest, NextResponse } from "next/server"
+import { db } from "@/lib/db"
+import { userSettings } from "@/db/schema"
+import { eq } from "drizzle-orm"
+import { randomUUID } from "crypto"
 
 export async function GET() {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const { data: settings, error } = await supabase.from("user_settings").select("*").eq("user_id", user.id).single()
-
-  if (error && error.code !== "PGRST116") {
-    // PGRST116 is "not found"
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+  const [settings] = await db
+    .select()
+    .from(userSettings)
+    .where(eq(userSettings.userId, session.user.id))
+    .limit(1)
 
   // Return default settings if none exist
   if (!settings) {
     const defaultSettings = {
-      user_id: user.id,
+      userId: session.user.id,
       theme: "light",
-      language: "English",
-      currency: "BDT",
-      date_format: "DD/MM/YYYY",
-      number_format: "1,234.56",
+      language: "en",
+      currency: "USD",
+      dateFormat: "MM/DD/YYYY",
+      numberFormat: "en-US",
       notifications: {
         email: true,
-        push: false,
-        weekly_reports: true,
-        transaction_alerts: true,
+        push: true,
+        sms: false,
       },
-      backup_settings: {
-        auto_backup: false,
-        backup_frequency: "weekly",
+      backupSettings: {
+        auto_backup: true,
+        frequency: "daily",
       },
-      onboarding_completed: false,
-      current_business_id: null,
+      onboardingCompleted: false,
+      currentBusinessId: null,
     }
     return NextResponse.json(defaultSettings)
   }
@@ -49,31 +47,41 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const body = await request.json()
 
-  const { data: settings, error } = await supabase
-    .from("user_settings")
-    .upsert({
-      user_id: user.id,
-      ...body,
-      updated_at: new Date().toISOString(),
-    })
+  const [existingSettings] = await db
     .select()
-    .single()
+    .from(userSettings)
+    .where(eq(userSettings.userId, session.user.id))
+    .limit(1)
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  let settings
+  if (existingSettings) {
+    const [updated] = await db
+      .update(userSettings)
+      .set({ ...body, updatedAt: new Date() })
+      .where(eq(userSettings.userId, session.user.id))
+      .returning()
+    settings = updated
+  } else {
+    const now = new Date()
+    const [created] = await db
+      .insert(userSettings)
+      .values({
+        id: randomUUID(),
+        userId: session.user.id,
+        ...body,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+    settings = created
   }
 
   return NextResponse.json(settings)

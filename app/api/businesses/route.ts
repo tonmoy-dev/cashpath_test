@@ -1,53 +1,72 @@
-import { createClient } from "@/lib/supabase/server"
+import { getServerSession } from "next-auth/next"
+import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { type NextRequest, NextResponse } from "next/server"
+import { db } from "@/lib/db"
+import { businesses, categories } from "@/db/schema"
+import { eq } from "drizzle-orm"
+import { randomUUID } from "crypto"
 
 export async function GET() {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const { data: businesses, error } = await supabase.from("businesses").select("*").eq("owner_id", user.id)
+  const businessesList = await db
+    .select()
+    .from(businesses)
+    .where(eq(businesses.ownerId, session.user.id))
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  return NextResponse.json(businesses)
+  return NextResponse.json(businessesList)
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
+  const session = await getServerSession(authOptions)
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const body = await request.json()
+  const now = new Date()
 
-  const { data: business, error } = await supabase
-    .from("businesses")
-    .insert({
+  const [newBusiness] = await db
+    .insert(businesses)
+    .values({
+      id: randomUUID(),
       ...body,
-      owner_id: user.id,
+      ownerId: session.user.id,
+      createdAt: now,
+      updatedAt: now,
     })
-    .select()
-    .single()
+    .returning()
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+  // Create default categories for the business
+  const defaultCategories = [
+    { name: "Sales Revenue", type: "income", color: "#10B981", icon: "trending-up" },
+    { name: "Service Income", type: "income", color: "#059669", icon: "briefcase" },
+    { name: "Investment Income", type: "income", color: "#047857", icon: "bar-chart" },
+    { name: "Other Income", type: "income", color: "#065F46", icon: "plus-circle" },
+    { name: "Office Supplies", type: "expense", color: "#EF4444", icon: "package" },
+    { name: "Marketing", type: "expense", color: "#DC2626", icon: "megaphone" },
+    { name: "Travel", type: "expense", color: "#B91C1C", icon: "map-pin" },
+    { name: "Utilities", type: "expense", color: "#991B1B", icon: "zap" },
+    { name: "Professional Services", type: "expense", color: "#7F1D1D", icon: "users" },
+    { name: "Other Expenses", type: "expense", color: "#6B1D1D", icon: "minus-circle" },
+    { name: "Account Transfer", type: "transfer", color: "#6B7280", icon: "arrow-right-left" },
+  ]
 
-  return NextResponse.json(business)
+  await db.insert(categories).values(
+    defaultCategories.map((cat) => ({
+      id: randomUUID(),
+      ...cat,
+      businessId: newBusiness.id,
+      createdBy: session.user.id,
+      createdAt: now,
+      updatedAt: now,
+    }))
+  )
+
+  return NextResponse.json(newBusiness)
 }

@@ -1,31 +1,20 @@
 import { type NextRequest, NextResponse } from "next/server"
 import bcrypt from "bcryptjs"
 import { db } from "@/lib/db"
-import { users, profiles, teamMembers } from "@/db/schema"
-import { eq, and } from "drizzle-orm"
+import { users, profiles, businesses } from "@/db/schema"
+import { eq } from "drizzle-orm"
 import { randomUUID } from "crypto"
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, password, name, invitationCode } = await request.json()
+    const { email, password, name, businessName } = await request.json()
 
-    if (!email || !password || !name || !invitationCode) {
+    if (!email || !password || !name) {
       return NextResponse.json({ error: "All fields are required" }, { status: 400 })
     }
 
     if (password.length < 6) {
       return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 })
-    }
-
-    // Verify invitation code
-    const [invitation] = await db
-      .select()
-      .from(teamMembers)
-      .where(and(eq(teamMembers.invitationCode, invitationCode), eq(teamMembers.status, "pending")))
-      .limit(1)
-
-    if (!invitation) {
-      return NextResponse.json({ error: "Invalid or expired invitation code" }, { status: 400 })
     }
 
     // Check if email already exists
@@ -43,7 +32,7 @@ export async function POST(request: NextRequest) {
     const saltRounds = 12
     const hashedPassword = await bcrypt.hash(password, saltRounds)
 
-    // Create user and profile in a transaction
+    // Create user, profile, and business in a transaction
     const result = await db.transaction(async (tx) => {
       const now = new Date()
       
@@ -70,21 +59,22 @@ export async function POST(request: NextRequest) {
         userId: user.id,
         firstName: name.split(" ")[0],
         lastName: name.split(" ").slice(1).join(" ") || "",
-        role: invitation.role,
+        role: "owner",
         createdAt: now,
         updatedAt: now,
       })
 
-      // Update team member invitation
-      await tx
-        .update(teamMembers)
-        .set({
-          userId: user.id,
-          status: "active",
-          joinedAt: now,
+      // Create business if businessName is provided
+      if (businessName) {
+        await tx.insert(businesses).values({
+          id: randomUUID(),
+          name: businessName,
+          ownerId: user.id,
+          email: email,
+          createdAt: now,
           updatedAt: now,
         })
-        .where(eq(teamMembers.id, invitation.id))
+      }
 
       return user
     })
@@ -92,9 +82,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       message: "Account created successfully. You can now sign in.",
+      userId: result.id,
     })
   } catch (error) {
-    console.error("Register member error:", error)
+    console.error("Signup error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }
