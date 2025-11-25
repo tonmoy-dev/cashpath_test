@@ -32,7 +32,7 @@ export function BookForm({ open, onOpenChange, onSuccess, initialName = "", titl
   const [bookType, setBookType] = useState("general")
   const [error, setError] = useState("")
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
 
@@ -45,7 +45,7 @@ export function BookForm({ open, onOpenChange, onSuccess, initialName = "", titl
 
     try {
       console.log("[v0] Calling addBook function...")
-      const newBook = addBook(bookName.trim(), bookType)
+      const newBook = await addBook(bookName.trim(), bookType)
       console.log("[v0] addBook result:", newBook)
 
       if (newBook) {

@@ -31,7 +31,7 @@ export default function TeamPage(): JSX.Element {
   const [showDeleteDialog, setShowDeleteDialog] = useState<boolean>(false)
   const [memberToDelete, setMemberToDelete] = useState<string | null>(null)
 
-  const handleAddMember = (formData: FormData): void => {
+  const handleAddMember = async (formData: FormData): Promise<void> => {
     const name = formData.get("name")
     const email = formData.get("email")
     const phone = formData.get("phone")
@@ -42,18 +42,22 @@ export default function TeamPage(): JSX.Element {
       return
     }
 
-    const memberData = {
-      name,
-      email,
-      phone: typeof phone === "string" ? phone : "",
-      role,
-      status: "Pending" as const,
-      joinedDate: new Date().toISOString().split("T")[0],
-      avatar: name.charAt(0).toUpperCase(),
+    try {
+      // Map role from UI to database format
+      const dbRole = role === "Business Partner" ? "partner" : "staff"
+      
+      await addTeamMember({
+        name,
+        email,
+        phone: typeof phone === "string" ? phone : "",
+        role: dbRole as "partner" | "staff",
+        status: "Pending",
+      })
+      setAddMemberOpen(false)
+    } catch (error) {
+      console.error("Failed to add team member:", error)
+      alert("Failed to add team member. Please try again.")
     }
-
-    addTeamMember(memberData)
-    setAddMemberOpen(false)
   }
 
   const handleEditMember = (member: TeamMember): void => {
@@ -61,7 +65,7 @@ export default function TeamPage(): JSX.Element {
     setEditMemberOpen(true)
   }
 
-  const handleUpdateMember = (formData: FormData): void => {
+  const handleUpdateMember = async (formData: FormData): Promise<void> => {
     if (!memberToEdit) return
 
     const name = formData.get("name")
@@ -84,19 +88,27 @@ export default function TeamPage(): JSX.Element {
       return
     }
 
+    // Map role from UI to database format
+    const dbRole = role === "Business Partner" ? "partner" : role === "Owner" ? "owner" : "staff"
+
     const updatedMember: TeamMember = {
       ...memberToEdit,
       name,
       email,
       phone: typeof phone === "string" ? phone : "",
-      role,
+      role: dbRole as "owner" | "partner" | "staff",
       status: status as "Active" | "Pending",
       avatar: name.charAt(0).toUpperCase(),
     }
 
-    updateTeamMember(updatedMember)
-    setEditMemberOpen(false)
-    setMemberToEdit(null)
+    try {
+      await updateTeamMember(updatedMember)
+      setEditMemberOpen(false)
+      setMemberToEdit(null)
+    } catch (error) {
+      console.error("Failed to update team member:", error)
+      alert("Failed to update team member. Please try again.")
+    }
   }
 
   const handleDeleteMember = (memberId: string): void => {
@@ -104,11 +116,16 @@ export default function TeamPage(): JSX.Element {
     setShowDeleteDialog(true)
   }
 
-  const confirmDeleteMember = (): void => {
+  const confirmDeleteMember = async (): Promise<void> => {
     if (memberToDelete) {
-      deleteTeamMember(memberToDelete)
-      setShowDeleteDialog(false)
-      setMemberToDelete(null)
+      try {
+        await deleteTeamMember(memberToDelete)
+        setShowDeleteDialog(false)
+        setMemberToDelete(null)
+      } catch (error) {
+        console.error("Failed to delete team member:", error)
+        alert("Failed to delete team member. Please try again.")
+      }
     }
   }
 
@@ -172,7 +189,7 @@ export default function TeamPage(): JSX.Element {
               <DialogHeader>
                 <DialogTitle>Add Team Member</DialogTitle>
               </DialogHeader>
-              <form action={handleAddMember} className="space-y-4">
+              <form onSubmit={(e) => { e.preventDefault(); handleAddMember(new FormData(e.currentTarget)) }} className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="name">Full Name *</Label>
                   <Input id="name" name="name" placeholder="Enter full name" required />
@@ -358,7 +375,7 @@ export default function TeamPage(): JSX.Element {
             <DialogTitle>Edit Team Member</DialogTitle>
           </DialogHeader>
           {memberToEdit && (
-            <form action={handleUpdateMember} className="space-y-4">
+            <form onSubmit={(e) => { e.preventDefault(); handleUpdateMember(new FormData(e.currentTarget)) }} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="edit-name">Full Name *</Label>
                 <Input

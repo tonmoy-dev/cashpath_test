@@ -35,6 +35,7 @@ export interface Transaction {
   id: string
   businessId: string
   accountId: string
+  bookId?: string
   date: string
   amount: number
   type: "income" | "expense" | "transfer-out" | "transfer-in"
@@ -125,6 +126,7 @@ export interface AppState {
   invitations: Invitation[]
   currentBusinessId: string | null
   currentAccount: string | null
+  currentBookId: string | null
   isLoading: boolean
   error: string | null
 }
@@ -143,6 +145,7 @@ const initialState: AppState = {
   invitations: [],
   currentBusinessId: null,
   currentAccount: null,
+  currentBookId: null,
   isLoading: false,
   error: null,
 }
@@ -174,6 +177,7 @@ type Action =
   | { type: "UPDATE_BOOK"; payload: Book }
   | { type: "DELETE_BOOK"; payload: string }
   | { type: "SET_CURRENT_ACCOUNT"; payload: string | null }
+  | { type: "SET_CURRENT_BOOK"; payload: string | null }
 
 function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -274,6 +278,9 @@ function appReducer(state: AppState, action: Action): AppState {
     case "SET_CURRENT_ACCOUNT":
       return { ...state, currentAccount: action.payload }
 
+    case "SET_CURRENT_BOOK":
+      return { ...state, currentBookId: action.payload }
+
     default:
       return state
   }
@@ -308,6 +315,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       dispatch({ type: "SET_AUTH_SESSION", payload: authSession })
       loadUserData()
+      
+      // Load current book from localStorage
+      const currentBookId = localStorage.getItem("currentBookId")
+      if (currentBookId) {
+        dispatch({ type: "SET_CURRENT_BOOK", payload: currentBookId })
+      }
     } else {
       dispatch({ type: "SET_AUTH_SESSION", payload: { user: null, isAuthenticated: false } })
     }
@@ -316,10 +329,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const loadUserData = async () => {
     dispatch({ type: "SET_LOADING", payload: true })
     try {
-      const [businessesRes, accountsRes, categoriesRes] = await Promise.all([
+      const [businessesRes, accountsRes, categoriesRes, booksRes] = await Promise.all([
         fetch("/api/businesses").then((r) => r.json()),
         fetch("/api/accounts").then((r) => r.json()),
         fetch("/api/categories").then((r) => r.json()),
+        fetch("/api/books").then((r) => r.json()).catch(() => []),
       ])
 
       if (Array.isArray(businessesRes) && businessesRes.length > 0) {
@@ -340,6 +354,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       if (Array.isArray(categoriesRes)) {
         dispatch({ type: "SET_STATE", payload: { categories: categoriesRes } })
+      }
+
+      if (Array.isArray(booksRes)) {
+        dispatch({ type: "SET_STATE", payload: { books: booksRes } })
+        
+        // Set first book as current if none is set
+        const currentBookId = localStorage.getItem("currentBookId")
+        if (!currentBookId && booksRes.length > 0) {
+          dispatch({ type: "SET_CURRENT_BOOK", payload: booksRes[0].id })
+          localStorage.setItem("currentBookId", booksRes[0].id)
+        }
+      }
+      
+      // Load transactions
+      try {
+        const transactionsRes = await fetch("/api/transactions").then((r) => r.json()).catch(() => [])
+        if (Array.isArray(transactionsRes)) {
+          dispatch({ type: "SET_STATE", payload: { transactions: transactionsRes } })
+        }
+      } catch (error) {
+        console.error("Failed to load transactions:", error)
       }
     } catch (error) {
       console.error("[v0] Error loading user data:", error)
@@ -400,35 +435,42 @@ export function useBooks() {
   const { state, dispatch } = useAppState()
   return {
     books: state.books,
+    currentBook: state.currentBookId || null,
+    setCurrentBook: (bookId: string | null) => {
+      if (bookId) {
+        localStorage.setItem("currentBookId", bookId)
+      } else {
+        localStorage.removeItem("currentBookId")
+      }
+      dispatch({ type: "SET_CURRENT_BOOK", payload: bookId })
+    },
     getCurrentBusinessBooks: () => {
       if (!state.currentBusinessId) return []
       return state.books.filter((book) => book.businessId === state.currentBusinessId)
     },
-    addBook: async (bookData: { name: string; bookType: string; description?: string }) => {
+    addBook: async (name: string, bookType: string, description?: string) => {
       try {
-        // Generate UUID (browser-compatible)
-        const generateUUID = () => {
-          if (typeof crypto !== "undefined" && crypto.randomUUID) {
-            return crypto.randomUUID()
-          }
-          // Fallback for older browsers
-          return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-            const r = (Math.random() * 16) | 0
-            const v = c === "x" ? r : (r & 0x3) | 0x8
-            return v.toString(16)
-          })
+        if (!state.currentBusinessId) {
+          throw new Error("No business selected")
         }
-        
-        const newBook: Book = {
-          id: generateUUID(),
-          businessId: state.currentBusinessId || "",
-          userId: state.authSession.user?.id || "",
-          name: bookData.name,
-          bookType: bookData.bookType as Book["bookType"],
-          description: bookData.description,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+
+        const response = await fetch("/api/books", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            bookType,
+            description,
+            businessId: state.currentBusinessId,
+          }),
+        })
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}))
+          throw new Error(error.error || "Failed to create book")
         }
+
+        const newBook = await response.json()
         dispatch({ type: "ADD_BOOK", payload: newBook })
         return newBook
       } catch (error) {
@@ -444,10 +486,10 @@ export function useTransactions() {
   return {
     transactions: state.transactions,
     getCurrentBookTransactions: (bookId?: string) => {
-      // Filter by current business and optionally by book
+      const targetBookId = bookId || state.currentBookId
       return state.transactions.filter((t) => {
         if (t.businessId !== state.currentBusinessId) return false
-        // If bookId is provided, filter by it (assuming transactions have a bookId field)
+        if (targetBookId && (t as any).bookId !== targetBookId) return false
         return true
       })
     },
@@ -457,11 +499,20 @@ export function useTransactions() {
     },
     addTransaction: async (transactionData: Partial<Transaction>) => {
       try {
+        // Ensure bookId is included if currentBookId is set
+        const dataToSend = {
+          ...transactionData,
+          bookId: transactionData.bookId || state.currentBookId || null,
+        }
         const response = await fetch("/api/transactions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(transactionData),
+          body: JSON.stringify(dataToSend),
         })
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}))
+          throw new Error(error.error || "Failed to create transaction")
+        }
         const transaction = await response.json()
         dispatch({ type: "ADD_TRANSACTION", payload: transaction })
         return transaction
@@ -495,31 +546,71 @@ export function useTransactions() {
       }
     },
     createTransfer: async (transferData: {
+      businessId: string
+      bookId?: string
       fromAccountId: string
       toAccountId: string
       amount: number
       date: string
       note?: string
+      attachments?: Attachment[]
     }) => {
-      // Create two transactions for transfer
-      const fromTransaction: Partial<Transaction> = {
-        accountId: transferData.fromAccountId,
-        businessId: state.currentBusinessId || "",
-        amount: transferData.amount,
-        type: "transfer-out",
-        date: transferData.date,
-        note: transferData.note,
+      try {
+        // Create two transactions for transfer
+        const transferId = crypto.randomUUID()
+        const fromTransaction: Partial<Transaction> = {
+          accountId: transferData.fromAccountId,
+          businessId: transferData.businessId,
+          bookId: transferData.bookId || state.currentBookId || null,
+          amount: transferData.amount,
+          type: "transfer-out",
+          date: transferData.date,
+          note: transferData.note,
+          attachments: transferData.attachments || [],
+          transferId,
+        }
+        const toTransaction: Partial<Transaction> = {
+          accountId: transferData.toAccountId,
+          businessId: transferData.businessId,
+          bookId: transferData.bookId || state.currentBookId || null,
+          amount: transferData.amount,
+          type: "transfer-in",
+          date: transferData.date,
+          note: transferData.note,
+          attachments: transferData.attachments || [],
+          transferId,
+          linkedTransactionId: transferId,
+        }
+        
+        // Create both transactions via API
+        const [fromRes, toRes] = await Promise.all([
+          fetch("/api/transactions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(fromTransaction),
+          }),
+          fetch("/api/transactions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(toTransaction),
+          }),
+        ])
+        
+        if (!fromRes.ok || !toRes.ok) {
+          throw new Error("Failed to create transfer transactions")
+        }
+        
+        const fromTx = await fromRes.json()
+        const toTx = await toRes.json()
+        
+        dispatch({ type: "ADD_TRANSACTION", payload: fromTx })
+        dispatch({ type: "ADD_TRANSACTION", payload: toTx })
+        
+        return { fromTransaction: fromTx, toTransaction: toTx }
+      } catch (error) {
+        console.error("Failed to create transfer:", error)
+        throw error
       }
-      const toTransaction: Partial<Transaction> = {
-        accountId: transferData.toAccountId,
-        businessId: state.currentBusinessId || "",
-        amount: transferData.amount,
-        type: "transfer-in",
-        date: transferData.date,
-        note: transferData.note,
-      }
-      // This would need to be handled by the API
-      return { fromTransaction, toTransaction }
     },
   }
 }
@@ -546,6 +637,177 @@ export function useAccounts() {
         }
         return balance
       }, 0)
+    },
+  }
+}
+
+export function useTeamMembers() {
+  const { state, dispatch } = useAppState()
+  
+  // Load team members from API
+  useEffect(() => {
+    const loadTeamMembers = async () => {
+      try {
+        const response = await fetch("/api/team-members")
+        if (response.ok) {
+          const data = await response.json()
+          // Transform API response to match TeamMember interface
+          const formattedMembers: TeamMember[] = data.map((m: any) => ({
+            id: m.id,
+            name: m.profiles 
+              ? `${m.profiles.first_name || ""} ${m.profiles.last_name || ""}`.trim() || m.profiles.email
+              : m.email,
+            email: m.profiles?.email || m.email,
+            phone: m.profiles?.phone || "",
+            role: m.role === "owner" ? "owner" : m.role === "partner" ? "partner" : "staff",
+            status: m.status === "active" ? "Active" : m.status === "pending" ? "Pending" : "Active",
+            joinedDate: m.joinedAt ? new Date(m.joinedAt).toISOString().split("T")[0] : new Date(m.createdAt).toISOString().split("T")[0],
+            avatar: m.profiles 
+              ? `${m.profiles.first_name?.[0] || ""}${m.profiles.last_name?.[0] || ""}`.toUpperCase() || m.email[0].toUpperCase()
+              : m.email[0].toUpperCase(),
+            invitationCode: m.invitationCode,
+            invitedBy: m.invitedBy,
+            invitedAt: m.createdAt,
+          }))
+          dispatch({ type: "SET_STATE", payload: { teamMembers: formattedMembers } })
+        }
+      } catch (error) {
+        console.error("Failed to load team members:", error)
+      }
+    }
+    
+    if (state.authSession.isAuthenticated) {
+      loadTeamMembers()
+    }
+  }, [state.authSession.isAuthenticated])
+
+  return {
+    teamMembers: state.teamMembers,
+    addTeamMember: async (memberData: Omit<TeamMember, "id" | "joinedDate" | "avatar" | "invitationCode" | "invitedBy" | "invitedAt">) => {
+      try {
+        const response = await fetch("/api/team-members", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: memberData.email,
+            role: memberData.role === "owner" ? "owner" : memberData.role === "partner" ? "partner" : "staff",
+          }),
+        })
+        if (response.ok) {
+          // Reload team members to get updated list
+          const reloadResponse = await fetch("/api/team-members")
+          if (reloadResponse.ok) {
+            const data = await reloadResponse.json()
+            const formattedMembers: TeamMember[] = data.map((m: any) => ({
+              id: m.id,
+              name: m.profiles 
+                ? `${m.profiles.first_name || ""} ${m.profiles.last_name || ""}`.trim() || m.profiles.email
+                : m.email,
+              email: m.profiles?.email || m.email,
+              phone: m.profiles?.phone || "",
+              role: m.role === "owner" ? "owner" : m.role === "partner" ? "partner" : "staff",
+              status: m.status === "active" ? "Active" : m.status === "pending" ? "Pending" : "Active",
+              joinedDate: m.joinedAt ? new Date(m.joinedAt).toISOString().split("T")[0] : new Date(m.createdAt).toISOString().split("T")[0],
+              avatar: m.profiles 
+                ? `${m.profiles.first_name?.[0] || ""}${m.profiles.last_name?.[0] || ""}`.toUpperCase() || m.email[0].toUpperCase()
+                : m.email[0].toUpperCase(),
+              invitationCode: m.invitationCode,
+              invitedBy: m.invitedBy,
+              invitedAt: m.createdAt,
+            }))
+            dispatch({ type: "SET_STATE", payload: { teamMembers: formattedMembers } })
+          }
+          return { success: true }
+        } else {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.error || "Failed to add team member")
+        }
+      } catch (error) {
+        console.error("Failed to add team member:", error)
+        throw error
+      }
+    },
+    updateTeamMember: async (member: TeamMember) => {
+      try {
+        const response = await fetch(`/api/team-members/${member.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            role: member.role === "owner" ? "owner" : member.role === "partner" ? "partner" : "staff",
+            status: member.status.toLowerCase(),
+          }),
+        })
+        if (response.ok) {
+          // Reload team members to get updated list
+          const reloadResponse = await fetch("/api/team-members")
+          if (reloadResponse.ok) {
+            const data = await reloadResponse.json()
+            const formattedMembers: TeamMember[] = data.map((m: any) => ({
+              id: m.id,
+              name: m.profiles 
+                ? `${m.profiles.first_name || ""} ${m.profiles.last_name || ""}`.trim() || m.profiles.email
+                : m.email,
+              email: m.profiles?.email || m.email,
+              phone: m.profiles?.phone || "",
+              role: m.role === "owner" ? "owner" : m.role === "partner" ? "partner" : "staff",
+              status: m.status === "active" ? "Active" : m.status === "pending" ? "Pending" : "Active",
+              joinedDate: m.joinedAt ? new Date(m.joinedAt).toISOString().split("T")[0] : new Date(m.createdAt).toISOString().split("T")[0],
+              avatar: m.profiles 
+                ? `${m.profiles.first_name?.[0] || ""}${m.profiles.last_name?.[0] || ""}`.toUpperCase() || m.email[0].toUpperCase()
+                : m.email[0].toUpperCase(),
+              invitationCode: m.invitationCode,
+              invitedBy: m.invitedBy,
+              invitedAt: m.createdAt,
+            }))
+            dispatch({ type: "SET_STATE", payload: { teamMembers: formattedMembers } })
+          }
+          return member
+        } else {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.error || "Failed to update team member")
+        }
+      } catch (error) {
+        console.error("Failed to update team member:", error)
+        throw error
+      }
+    },
+    deleteTeamMember: async (memberId: string) => {
+      try {
+        const response = await fetch(`/api/team-members/${memberId}`, {
+          method: "DELETE",
+        })
+        if (response.ok) {
+          // Reload team members to get updated list
+          const reloadResponse = await fetch("/api/team-members")
+          if (reloadResponse.ok) {
+            const data = await reloadResponse.json()
+            const formattedMembers: TeamMember[] = data.map((m: any) => ({
+              id: m.id,
+              name: m.profiles 
+                ? `${m.profiles.first_name || ""} ${m.profiles.last_name || ""}`.trim() || m.profiles.email
+                : m.email,
+              email: m.profiles?.email || m.email,
+              phone: m.profiles?.phone || "",
+              role: m.role === "owner" ? "owner" : m.role === "partner" ? "partner" : "staff",
+              status: m.status === "active" ? "Active" : m.status === "pending" ? "Pending" : "Active",
+              joinedDate: m.joinedAt ? new Date(m.joinedAt).toISOString().split("T")[0] : new Date(m.createdAt).toISOString().split("T")[0],
+              avatar: m.profiles 
+                ? `${m.profiles.first_name?.[0] || ""}${m.profiles.last_name?.[0] || ""}`.toUpperCase() || m.email[0].toUpperCase()
+                : m.email[0].toUpperCase(),
+              invitationCode: m.invitationCode,
+              invitedBy: m.invitedBy,
+              invitedAt: m.createdAt,
+            }))
+            dispatch({ type: "SET_STATE", payload: { teamMembers: formattedMembers } })
+          }
+        } else {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(errorData.error || "Failed to delete team member")
+        }
+      } catch (error) {
+        console.error("Failed to delete team member:", error)
+        throw error
+      }
     },
   }
 }

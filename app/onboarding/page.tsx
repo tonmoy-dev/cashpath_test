@@ -28,7 +28,7 @@ export default function OnboardingPage() {
   const router = useRouter()
   const { addBusiness, setCurrentBusiness } = useBusinesses()
 
-  const handleGetStarted = (e: React.FormEvent) => {
+  const handleGetStarted = async (e: React.FormEvent) => {
     e.preventDefault()
 
     if (!fullName.trim()) {
@@ -41,20 +41,45 @@ export default function OnboardingPage() {
       return
     }
 
-    localStorage.setItem("pcash_user_name", fullName)
-    localStorage.setItem("pcash_use_type", useType)
+    try {
+      // Create business in database
+      let businessId: string | null = null
+      
+      if (useType === "business" && businessName.trim()) {
+        const newBusiness = await addBusiness(businessName.trim())
+        businessId = newBusiness.id
+        setCurrentBusiness(businessId)
+      } else if (useType === "personal") {
+        // For personal use, create a default personal business entry
+        const personalBusiness = await addBusiness(`${fullName}'s Personal Finance`)
+        businessId = personalBusiness.id
+        setCurrentBusiness(businessId)
+      }
 
-    if (useType === "business" && businessName.trim()) {
-      const newBusiness = addBusiness(businessName.trim())
-      setCurrentBusiness(newBusiness.id)
-    } else if (useType === "personal") {
-      // For personal use, create a default personal business entry
-      const personalBusiness = addBusiness(`${fullName}'s Personal Finance`)
-      setCurrentBusiness(personalBusiness.id)
+      // Update user settings to mark onboarding as complete
+      try {
+        await fetch("/api/user-settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            onboardingCompleted: true,
+            currentBusinessId: businessId,
+          }),
+        })
+      } catch (error) {
+        console.error("Failed to update user settings:", error)
+        // Continue even if this fails
+      }
+
+      localStorage.setItem("pcash_user_name", fullName)
+      localStorage.setItem("pcash_use_type", useType)
+      localStorage.setItem("pcash_onboarding_complete", "true")
+      
+      router.push("/dashboard")
+    } catch (error) {
+      console.error("Failed to complete onboarding:", error)
+      setShowErrorDialog(true)
     }
-
-    localStorage.setItem("pcash_onboarding_complete", "true")
-    router.push("/dashboard")
   }
 
   return (

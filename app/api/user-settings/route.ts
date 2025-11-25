@@ -86,3 +86,44 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json(settings)
 }
+
+export async function PUT(request: NextRequest) {
+  const session = await getServerSession(authOptions)
+
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const body = await request.json()
+
+  const [existingSettings] = await db
+    .select()
+    .from(userSettings)
+    .where(eq(userSettings.userId, session.user.id))
+    .limit(1)
+
+  let settings
+  if (existingSettings) {
+    const [updated] = await db
+      .update(userSettings)
+      .set({ ...body, updatedAt: new Date() })
+      .where(eq(userSettings.userId, session.user.id))
+      .returning()
+    settings = updated
+  } else {
+    const now = new Date()
+    const [created] = await db
+      .insert(userSettings)
+      .values({
+        id: randomUUID(),
+        userId: session.user.id,
+        ...body,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning()
+    settings = created
+  }
+
+  return NextResponse.json(settings)
+}

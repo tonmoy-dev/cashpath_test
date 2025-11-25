@@ -131,11 +131,30 @@ export const categories = pgTable("categories", {
   isActiveIdx: index("categories_is_active_idx").on(table.isActive),
 }))
 
+// Books table (must be defined before transactions since transactions references it)
+export const books = pgTable("books", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  bookType: text("book_type").default("general").notNull(),
+  description: text("description"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  businessNameUnique: uniqueIndex("books_business_name_unique").on(table.businessId, table.name),
+  businessBookTypeUnique: uniqueIndex("books_business_book_type_unique").on(table.businessId, table.bookType),
+  businessIdx: index("books_business_id_idx").on(table.businessId),
+  userIdx: index("books_user_id_idx").on(table.userId),
+  bookTypeIdx: index("books_book_type_idx").on(table.bookType),
+}))
+
 // Transactions table
 export const transactions = pgTable("transactions", {
   id: uuid("id").primaryKey().defaultRandom(),
   businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
   accountId: uuid("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+  bookId: uuid("book_id").references(() => books.id, { onDelete: "set null" }),
   categoryId: uuid("category_id").references(() => categories.id, { onDelete: "set null" }),
   amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
   type: text("type").notNull(),
@@ -152,29 +171,12 @@ export const transactions = pgTable("transactions", {
 }, (table) => ({
   businessIdx: index("transactions_business_id_idx").on(table.businessId),
   accountIdx: index("transactions_account_id_idx").on(table.accountId),
+  bookIdx: index("transactions_book_id_idx").on(table.bookId),
   categoryIdx: index("transactions_category_id_idx").on(table.categoryId),
   dateIdx: index("transactions_date_idx").on(table.date),
   typeIdx: index("transactions_type_idx").on(table.type),
   createdAtIdx: index("transactions_created_at_idx").on(table.createdAt),
   transferIdIdx: index("transactions_transfer_id_idx").on(table.transferId),
-}))
-
-// Books table
-export const books = pgTable("books", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
-  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  bookType: text("book_type").default("general").notNull(),
-  description: text("description"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => ({
-  businessNameUnique: uniqueIndex("books_business_name_unique").on(table.businessId, table.name),
-  businessBookTypeUnique: uniqueIndex("books_business_book_type_unique").on(table.businessId, table.bookType),
-  businessIdx: index("books_business_id_idx").on(table.businessId),
-  userIdx: index("books_user_id_idx").on(table.userId),
-  bookTypeIdx: index("books_book_type_idx").on(table.bookType),
 }))
 
 // Audit logs table
@@ -282,6 +284,10 @@ export const transactionsRelations = relations(transactions, ({ one }) => ({
     fields: [transactions.accountId],
     references: [accounts.id],
   }),
+  book: one(books, {
+    fields: [transactions.bookId],
+    references: [books.id],
+  }),
   category: one(categories, {
     fields: [transactions.categoryId],
     references: [categories.id],
@@ -292,7 +298,7 @@ export const transactionsRelations = relations(transactions, ({ one }) => ({
   }),
 }))
 
-export const booksRelations = relations(books, ({ one }) => ({
+export const booksRelations = relations(books, ({ one, many }) => ({
   business: one(businesses, {
     fields: [books.businessId],
     references: [businesses.id],
@@ -301,6 +307,7 @@ export const booksRelations = relations(books, ({ one }) => ({
     fields: [books.userId],
     references: [users.id],
   }),
+  transactions: many(transactions),
 }))
 
 export const auditLogsRelations = relations(auditLogs, ({ one }) => ({

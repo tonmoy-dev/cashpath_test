@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -16,7 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { useBusinesses, useTransactions, useAccounts, type Transaction, type Attachment } from "@/lib/store"
+import { useBusinesses, useTransactions, useAccounts, useBooks, type Transaction, type Attachment } from "@/lib/store"
 import { AttachmentUpload } from "@/components/attachments/attachment-upload"
 import { AttachmentViewer } from "@/components/attachments/attachment-viewer"
 import { Search, Plus, Minus, Edit, Trash2, Paperclip, ArrowRightLeft } from "lucide-react"
@@ -26,14 +26,16 @@ import { useToast } from "@/hooks/use-toast"
 
 export default function BusinessBookPage() {
   const { businesses, currentBusiness, setCurrentBusiness } = useBusinesses()
-  const { accounts, currentAccount, getCurrentBusinessAccounts, calculateRunningBalance } = useAccounts()
-  const { getCurrentAccountTransactions, addTransaction, updateTransaction, deleteTransaction, createTransfer } =
+  const { accounts, getCurrentBusinessAccounts, calculateRunningBalance } = useAccounts()
+  const { books, currentBook, setCurrentBook, getCurrentBusinessBooks } = useBooks()
+  const { getCurrentBookTransactions, addTransaction, updateTransaction, deleteTransaction, createTransfer } =
     useTransactions()
   const { toast } = useToast()
 
   const selectedBusinessName = businesses.find((b) => b.id === currentBusiness)?.name || "Dev"
-  const transactions = getCurrentAccountTransactions()
-  const currentAccountData = accounts.find((a) => a.id === currentAccount)
+  const transactions = getCurrentBookTransactions(currentBook || undefined)
+  const currentBookData = books.find((b) => b.id === currentBook)
+  const businessBooks = getCurrentBusinessBooks()
   const businessAccounts = getCurrentBusinessAccounts()
 
   const [cashInOpen, setCashInOpen] = useState(false)
@@ -64,6 +66,26 @@ export default function BusinessBookPage() {
 
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false)
 
+  // Reload transactions when book changes
+  useEffect(() => {
+    const loadTransactions = async () => {
+      if (!currentBook || !currentBusiness) return
+      
+      try {
+        const response = await fetch(`/api/transactions?book_id=${currentBook}`)
+        if (response.ok) {
+          const data = await response.json()
+          // Update transactions in store
+          // This will be handled by the store's transaction loading
+        }
+      } catch (error) {
+        console.error("Failed to load transactions:", error)
+      }
+    }
+    
+    loadTransactions()
+  }, [currentBook, currentBusiness])
+
   const handleBookSuccess = (bookId: string) => {
     toast({
       title: "Success!",
@@ -73,31 +95,63 @@ export default function BusinessBookPage() {
     setShowAddBook(false)
   }
 
-  const handleAddTransaction = (type: "income" | "expense", formData: FormData, attachments: Attachment[]) => {
-    if (!currentBusiness || !currentAccount) return
-
-    const newTransactionData = {
-      businessId: currentBusiness,
-      accountId: currentAccount,
-      type,
-      amount: Number(formData.get("amount")),
-      note: formData.get("description") as string,
-      categoryId: formData.get("category") as string,
-      paymentMode: formData.get("paymentMode") as string,
-      date: formData.get("date") as string,
-      attachments,
-      createdBy: "member-1", // Should be current user ID
+  const handleAddTransaction = async (type: "income" | "expense", formData: FormData, attachments: Attachment[]) => {
+    if (!currentBusiness || !currentBook) {
+      toast({
+        title: "Error",
+        description: "Please select a book first",
+        variant: "destructive",
+      })
+      return
     }
 
-    addTransaction(newTransactionData)
+    // Get default account for the book (or first account)
+    const defaultAccount = businessAccounts[0]
+    if (!defaultAccount) {
+      toast({
+        title: "Error",
+        description: "No account available. Please create an account first.",
+        variant: "destructive",
+      })
+      return
+    }
 
-    // Reset form state
-    if (type === "income") {
-      setCashInOpen(false)
-      setCashInAttachments([])
-    } else {
-      setCashOutOpen(false)
-      setCashOutAttachments([])
+    try {
+      const newTransactionData = {
+        businessId: currentBusiness,
+        accountId: defaultAccount.id,
+        bookId: currentBook,
+        type,
+        amount: Number(formData.get("amount")),
+        note: formData.get("description") as string,
+        categoryId: formData.get("category") as string,
+        paymentMode: formData.get("paymentMode") as string,
+        date: formData.get("date") as string,
+        attachments,
+      }
+
+      await addTransaction(newTransactionData)
+      
+      toast({
+        title: "Success!",
+        description: "Transaction created successfully",
+        variant: "default",
+      })
+
+      // Reset form state
+      if (type === "income") {
+        setCashInOpen(false)
+        setCashInAttachments([])
+      } else {
+        setCashOutOpen(false)
+        setCashOutAttachments([])
+      }
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to create transaction",
+        variant: "destructive",
+      })
     }
   }
 
@@ -107,23 +161,36 @@ export default function BusinessBookPage() {
     setEditDialogOpen(true)
   }
 
-  const handleUpdateTransaction = (formData: FormData) => {
+  const handleUpdateTransaction = async (formData: FormData) => {
     if (!editingTransaction) return
 
-    const updatedTransaction: Transaction = {
-      ...editingTransaction,
-      amount: Number(formData.get("amount")),
-      note: formData.get("description") as string,
-      categoryId: formData.get("category") as string,
-      paymentMode: formData.get("paymentMode") as string,
-      date: formData.get("date") as string,
-      attachments: editAttachments,
-    }
+    try {
+      const updatedTransaction: Transaction = {
+        ...editingTransaction,
+        amount: Number(formData.get("amount")),
+        note: formData.get("description") as string,
+        categoryId: formData.get("category") as string,
+        paymentMode: formData.get("paymentMode") as string,
+        date: formData.get("date") as string,
+        attachments: editAttachments,
+      }
 
-    updateTransaction(updatedTransaction)
-    setEditDialogOpen(false)
-    setEditingTransaction(null)
-    setEditAttachments([])
+      await updateTransaction(editingTransaction.id, updatedTransaction)
+      toast({
+        title: "Success!",
+        description: "Transaction updated successfully",
+        variant: "default",
+      })
+      setEditDialogOpen(false)
+      setEditingTransaction(null)
+      setEditAttachments([])
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to update transaction",
+        variant: "destructive",
+      })
+    }
   }
 
   const handleDeleteTransaction = (transactionId: string) => {
@@ -220,37 +287,61 @@ export default function BusinessBookPage() {
     setReportsOpen(false)
   }
 
-  const handleTransfer = (formData: FormData, attachments: Attachment[]) => {
-    if (!currentBusiness || !currentAccount) return
+  const handleTransfer = async (formData: FormData, attachments: Attachment[]) => {
+    if (!currentBusiness || !currentBook) {
+      toast({
+        title: "Error",
+        description: "Please select a book first",
+        variant: "destructive",
+      })
+      return
+    }
 
-    const fromAccountId = currentAccount
+    const fromAccountId = formData.get("fromAccount") as string
     const toAccountId = formData.get("toAccount") as string
     const amount = Number(formData.get("amount"))
     const note = formData.get("description") as string
     const date = formData.get("date") as string
 
     if (fromAccountId === toAccountId) {
-      alert("Cannot transfer to the same account")
+      toast({
+        title: "Error",
+        description: "Cannot transfer to the same account",
+        variant: "destructive",
+      })
       return
     }
 
-    createTransfer({
-      businessId: currentBusiness,
-      fromAccountId,
-      toAccountId,
-      amount,
-      note,
-      date,
-      attachments,
-      createdBy: "member-1", // Should be current user ID
-    })
+    try {
+      await createTransfer({
+        businessId: currentBusiness,
+        bookId: currentBook,
+        fromAccountId,
+        toAccountId,
+        amount,
+        note,
+        date,
+        attachments,
+      })
 
-    setTransferOpen(false)
-    setTransferAttachments([])
+      toast({
+        title: "Success!",
+        description: "Transfer created successfully",
+        variant: "default",
+      })
+      setTransferOpen(false)
+      setTransferAttachments([])
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to create transfer",
+        variant: "destructive",
+      })
+    }
   }
 
   const calculateTransactionRunningBalance = (): Array<Transaction & { runningBalance: number }> => {
-    if (!currentAccount) return []
+    if (!currentBook) return []
 
     const accountTransactions = transactions.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
@@ -286,7 +377,9 @@ export default function BusinessBookPage() {
   const totalExpense = transactionsWithBalance.filter((t) => t.type === "expense").reduce((sum, t) => sum + t.amount, 0)
 
   const balance = totalIncome - totalExpense
-  const runningBalance = currentAccount ? calculateRunningBalance(currentAccount) : 0
+  // Calculate running balance for the current book's default account
+  const defaultAccount = businessAccounts[0]
+  const runningBalance = defaultAccount ? calculateRunningBalance(defaultAccount.id) : 0
 
   return (
     <DashboardLayout>
@@ -315,33 +408,28 @@ export default function BusinessBookPage() {
               </div>
             </div>
 
-            {/* Search and Action Controls */}
+            {/* Book Selector and Action Controls */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-              <div className="relative flex-1 max-w-md">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                <Input
-                  placeholder="Search by book name..."
-                  className="pl-10 w-full"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
-              </div>
-
-              <div className="flex items-center gap-4">
-                <Select defaultValue="last-updated">
-                  <SelectTrigger className="w-40">
-                    <SelectValue />
+              <div className="flex items-center gap-4 flex-1">
+                <Select 
+                  value={currentBook || ""} 
+                  onValueChange={(value) => setCurrentBook(value)}
+                >
+                  <SelectTrigger className="w-full sm:w-64">
+                    <SelectValue placeholder="Select a book" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="last-updated">Last Updated</SelectItem>
-                    <SelectItem value="name">Name</SelectItem>
-                    <SelectItem value="created">Created Date</SelectItem>
+                    {businessBooks.map((book) => (
+                      <SelectItem key={book.id} value={book.id}>
+                        {book.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
-
+                
                 <Button
                   onClick={() => setShowAddBook(true)}
-                  className="bg-blue-600 hover:bg-blue-700 shadow-md w-full sm:w-auto"
+                  className="bg-blue-600 hover:bg-blue-700 shadow-md"
                 >
                   <Plus className="w-4 h-4 mr-2" />
                   Add New Book
@@ -480,7 +568,10 @@ export default function BusinessBookPage() {
                     <DialogTitle className="text-green-600">Add Cash In Entry</DialogTitle>
                   </DialogHeader>
                   <form
-                    action={(formData) => handleAddTransaction("income", formData, cashInAttachments)}
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      handleAddTransaction("income", new FormData(e.currentTarget), cashInAttachments)
+                    }}
                     className="space-y-4"
                   >
                     <div className="space-y-2">
@@ -558,7 +649,10 @@ export default function BusinessBookPage() {
                     <DialogTitle className="text-red-600">Add Cash Out Entry</DialogTitle>
                   </DialogHeader>
                   <form
-                    action={(formData) => handleAddTransaction("expense", formData, cashOutAttachments)}
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      handleAddTransaction("expense", new FormData(e.currentTarget), cashOutAttachments)
+                    }}
                     className="space-y-4"
                   >
                     <div className="space-y-2">
@@ -637,15 +731,27 @@ export default function BusinessBookPage() {
                   <DialogHeader>
                     <DialogTitle className="text-blue-600">Transfer Between Accounts</DialogTitle>
                   </DialogHeader>
-                  <form action={(formData) => handleTransfer(formData, transferAttachments)} className="space-y-4">
+                  <form 
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      handleTransfer(new FormData(e.currentTarget), transferAttachments)
+                    }} 
+                    className="space-y-4"
+                  >
                     <div className="space-y-2">
                       <Label htmlFor="fromAccount">From Account</Label>
-                      <Input
-                        id="fromAccount"
-                        value={currentAccountData?.name || "Current Account"}
-                        disabled
-                        className="bg-gray-50"
-                      />
+                      <Select name="fromAccount" defaultValue={businessAccounts[0]?.id} required>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select account" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {businessAccounts.map((account) => (
+                            <SelectItem key={account.id} value={account.id}>
+                              {account.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
 
                     <div className="space-y-2">
@@ -705,7 +811,13 @@ export default function BusinessBookPage() {
                     <DialogTitle>Edit Transaction</DialogTitle>
                   </DialogHeader>
                   {editingTransaction && (
-                    <form action={handleUpdateTransaction} className="space-y-4">
+                    <form 
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        handleUpdateTransaction(new FormData(e.currentTarget))
+                      }} 
+                      className="space-y-4"
+                    >
                       <div className="space-y-2">
                         <Label htmlFor="edit-amount">Amount *</Label>
                         <Input
@@ -801,18 +913,38 @@ export default function BusinessBookPage() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
             <div>
               <h2 className="text-lg sm:text-xl font-semibold mb-1">
-                {currentAccountData?.name || "Account Overview"}
+                {currentBookData?.name || "Select a Book"}
               </h2>
-              <p className="text-sm text-gray-600">
-                Running Balance:{" "}
-                <span className="font-semibold text-green-600">৳{runningBalance.toLocaleString()}</span>
-              </p>
+              {currentBookData && (
+                <p className="text-sm text-gray-600">
+                  Book Type: <span className="font-medium">{currentBookData.bookType}</span>
+                  {currentBookData.description && ` • ${currentBookData.description}`}
+                </p>
+              )}
+              {!currentBook && (
+                <p className="text-sm text-orange-600">
+                  Please select a book to view and create transactions
+                </p>
+              )}
             </div>
           </div>
 
           {/* Transaction List */}
           <div className="space-y-3">
-            {filteredTransactionsWithBalance.map((transaction) => (
+            {!currentBook ? (
+              <Card>
+                <CardContent className="p-8 text-center">
+                  <p className="text-gray-500">Please select a book to view transactions</p>
+                </CardContent>
+              </Card>
+            ) : filteredTransactionsWithBalance.length === 0 ? (
+              <Card>
+                <CardContent className="p-8 text-center">
+                  <p className="text-gray-500">No transactions found for this book</p>
+                </CardContent>
+              </Card>
+            ) : (
+              filteredTransactionsWithBalance.map((transaction) => (
               <Card key={transaction.id} className="hover:shadow-md transition-shadow">
                 <CardContent className="p-4">
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -897,7 +1029,7 @@ export default function BusinessBookPage() {
                   </div>
                 </CardContent>
               </Card>
-            ))}
+            )))}
           </div>
         </div>
       </main>

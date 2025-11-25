@@ -41,11 +41,16 @@ export async function GET() {
     ...m.teamMember,
     profiles: m.user
       ? {
-          first_name: m.profile?.firstName,
-          last_name: m.profile?.lastName,
+          first_name: m.profile?.firstName || "",
+          last_name: m.profile?.lastName || "",
           email: m.user.email,
+          phone: m.profile?.phone || "",
         }
       : null,
+    user: m.user ? {
+      email: m.user.email,
+      name: m.user.name,
+    } : null,
   }))
 
   return NextResponse.json(formattedMembers)

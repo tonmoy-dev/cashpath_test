@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth/next"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { type NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
-import { profiles } from "@/db/schema"
+import { profiles, users } from "@/db/schema"
 import { eq } from "drizzle-orm"
 import { randomUUID } from "crypto"
 
@@ -13,17 +13,24 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const [profile] = await db
-    .select()
+  const [profileData] = await db
+    .select({
+      profile: profiles,
+      user: users,
+    })
     .from(profiles)
+    .leftJoin(users, eq(profiles.userId, users.id))
     .where(eq(profiles.userId, session.user.id))
     .limit(1)
 
-  if (!profile) {
+  if (!profileData?.profile) {
     return NextResponse.json({ error: "Profile not found" }, { status: 404 })
   }
 
-  return NextResponse.json(profile)
+  return NextResponse.json({
+    ...profileData.profile,
+    email: profileData.user?.email || session.user.email,
+  })
 }
 
 export async function PUT(request: NextRequest) {

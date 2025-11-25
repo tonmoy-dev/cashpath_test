@@ -29,13 +29,16 @@ export default function UserProfilePage() {
         if (response.ok) {
           const profileData = await response.json()
           setProfile({
-            name: `${profileData.first_name || ""} ${profileData.last_name || ""}`.trim(),
+            name: `${profileData.firstName || ""} ${profileData.lastName || ""}`.trim() || "",
             email: profileData.email || "",
             phone: profileData.phone || "",
             timezone: "Asia/Dhaka", // Default timezone
             language: "English", // Default language
-            avatar: profileData.avatar_url || "",
+            avatar: profileData.avatarUrl || "",
           })
+        } else if (response.status === 404) {
+          // Profile doesn't exist yet, that's okay
+          setIsLoading(false)
         }
       } catch (error) {
         console.error("Failed to load profile:", error)
@@ -67,16 +70,17 @@ export default function UserProfilePage() {
       if (response.ok) {
         const savedProfile = await response.json()
         setProfile({
-          name: `${savedProfile.first_name || ""} ${savedProfile.last_name || ""}`.trim(),
-          email: savedProfile.email || "",
+          name: `${savedProfile.firstName || ""} ${savedProfile.lastName || ""}`.trim(),
+          email: profile.email, // Email comes from user, not profile
           phone: savedProfile.phone || "",
           timezone: profile.timezone,
           language: profile.language,
-          avatar: savedProfile.avatar_url || "",
+          avatar: savedProfile.avatarUrl || "",
         })
         alert("Profile updated successfully!")
       } else {
-        throw new Error("Failed to update profile")
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || "Failed to update profile")
       }
     } catch (error) {
       console.error("Failed to save profile:", error)

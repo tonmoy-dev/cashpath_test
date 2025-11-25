@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth/next"
 import { authOptions } from "@/app/api/auth/[...nextauth]/route"
 import { type NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
-import { transactions, businesses, teamMembers, accounts } from "@/db/schema"
+import { transactions, businesses, teamMembers, accounts, books } from "@/db/schema"
 import { eq, and, inArray, desc } from "drizzle-orm"
 import { randomUUID } from "crypto"
 
@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url)
   const accountId = searchParams.get("account_id")
+  const bookId = searchParams.get("book_id")
 
   // Get user's accessible businesses
   const userBusinesses = await db
@@ -36,29 +37,44 @@ export async function GET(request: NextRequest) {
     return NextResponse.json([])
   }
 
-  let query = db
+  // Build where conditions
+  const whereConditions: any[] = [inArray(transactions.businessId, businessIds)]
+  
+  if (accountId) {
+    whereConditions.push(eq(transactions.accountId, accountId))
+  }
+  
+  if (bookId) {
+    whereConditions.push(eq(transactions.bookId, bookId))
+  }
+  
+  const finalWhere = whereConditions.length > 1 
+    ? and(...whereConditions)
+    : whereConditions[0]
+
+  const results = await db
     .select({
       transaction: transactions,
       account: {
         name: accounts.name,
         type: accounts.type,
       },
+      book: {
+        id: books.id,
+        name: books.name,
+      },
     })
     .from(transactions)
     .leftJoin(accounts, eq(transactions.accountId, accounts.id))
-    .where(inArray(transactions.businessId, businessIds))
+    .leftJoin(books, eq(transactions.bookId, books.id))
+    .where(finalWhere)
     .orderBy(desc(transactions.date))
-
-  if (accountId) {
-    query = query.where(and(inArray(transactions.businessId, businessIds), eq(transactions.accountId, accountId))) as any
-  }
-
-  const results = await query
 
   // Format response
   const formattedTransactions = results.map((r) => ({
     ...r.transaction,
     account: r.account,
+    book: r.book,
   }))
 
   return NextResponse.json(formattedTransactions)
@@ -81,7 +97,19 @@ export async function POST(request: NextRequest) {
       .insert(transactions)
       .values({
         id: randomUUID(),
-        ...body,
+        businessId: body.businessId || body.business_id,
+        accountId: body.accountId || body.account_id,
+        bookId: body.bookId || body.book_id || null,
+        categoryId: body.categoryId || body.category_id || null,
+        amount: body.amount,
+        type: body.type,
+        date: body.date || new Date().toISOString().split("T")[0],
+        note: body.note || null,
+        paymentMode: body.paymentMode || body.payment_mode || null,
+        transferId: body.transferId || body.transfer_id || null,
+        linkedTransactionId: body.linkedTransactionId || body.linked_transaction_id || null,
+        attachments: body.attachments || [],
+        status: body.status || "cleared",
         createdBy: session.user.id,
         createdAt: now,
         updatedAt: now,
